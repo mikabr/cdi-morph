@@ -1,0 +1,945 @@
+---
+title: "Morphological (Over-)Generalization"
+output:
+  html_document:
+    highlight: tango
+    theme: cosmo
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(wordbankr)
+library(langcog)
+library(knitr)
+library(feather)
+library(tidyverse)
+library(glue)
+library(ggstance)
+library(magrittr)
+set.seed(42)
+
+opts_chunk$set(message = FALSE, warning = FALSE, cache = TRUE, echo = FALSE)
+```
+
+```{r helper_data}
+admins <- get_administration_data()
+items <- get_item_data()
+
+morph_items <- read_csv("resources/overreg_item_coding.csv")
+morph_langs <- morph_items %>%
+  filter(group != "abstract") %>%
+  group_by(language) %>%
+  filter("correct" %in% group & "overregularized" %in% group) %>%
+  distinct(language) %>%
+  pull(language)
+
+words <- items %>%
+  filter(form == "WS", type == "word", language %in% morph_langs) %>%
+  select(language, item_id, num_item_id, lexical_class, definition) %>%
+  mutate(definition = str_remove(definition, " \\(.*\\)"))
+
+num_words_class <- words %>% group_by(lexical_class) %>% count(language, name = "words")
+num_words <- words %>% count(language, name = "words")
+```
+
+```{r get_verb_data}
+get_item_data <- function(lang, lang_items) {
+  print(lang)
+  lang_admins <- admins %>% filter(language == lang, form == "WS")
+  lang_items <- lang_items %>% mutate(language = lang, form = "WS")
+  get_instrument_data(language = lang,
+                      form = "WS",
+                      items = lang_items$item_id,
+                      iteminfo = lang_items,
+                      administrations = lang_admins)
+}
+
+word_data <- words %>%
+  nest(item = -language) %>%
+  mutate(data = map2(language, items, get_item_data))
+
+verb_item_data <- word_data %>%
+  mutate(data = map(data, ~filter(., lexical_class == "verbs"))) %>%
+  ungroup() %>%
+  select(data) %>%
+  unnest(data) %>%
+  select(-lexical_class)
+
+write_feather(verb_item_data, "data/verb_item_data.feather")
+```
+
+```{r compare_vocab_measures}
+lexcat_data <- word_data %>%
+  mutate(lexcat = map(data, function(lang_data) {
+    lang_data %>%
+      group_by(data_id, age, lexical_class) %>%
+      summarise(num_true = sum(produces), total = n())
+  })) %>%
+  select(-items, -data) %>%
+  unnest(lexcat)
+
+verb_data <- lexcat_data %>%
+  mutate(verb = if_else(lexical_class == "verbs", "verbs", "non_verbs")) %>%
+  group_by(language, age, data_id, verb) %>%
+  summarise(num_true = sum(num_true),
+            total = sum(total)) %>%
+  mutate(verb_prop = num_true / total) %>%
+  select(language, age, data_id, verb, verb_prop)
+
+eng_verbs_coding <- read_csv("resources/eng_verbs.csv")
+eng_verb_data <- word_data %>%
+  filter(language == "English (American)") %>%
+  pull(data) %>%
+  pluck(1) %>%
+  filter(lexical_class == "verbs") %>%
+  left_join(eng_verbs_coding)
+
+eng_regularity_data <- eng_verb_data %>%
+  mutate(class = if_else(matches_add_d, "regular", "irregular")) %>%
+  group_by(data_id, age, class) %>%
+  summarise(num_true = sum(produces), total = n()) %>%
+  mutate(class_prop = num_true / total) %>%
+  select(age, data_id, class, class_prop)
+
+vocab_data <- lexcat_data %>%
+  group_by(language, age, data_id) %>%
+  summarise(num_true = sum(num_true),
+            total = sum(total)) %>%
+  mutate(vocab_prop = num_true / total) %>%
+  select(language, age, data_id, vocab_prop)
+
+compare_props <- bind_rows(
+  vocab_data %>%
+    ungroup() %>%
+    filter(language == "English (American)") %>%
+    select(-language) %>%
+    mutate(group = "vocab") %>%
+    rename(prop = vocab_prop),
+  verb_data %>%
+    ungroup() %>%
+    filter(language == "English (American)") %>%
+    select(-language) %>%
+    rename(group = verb, prop = verb_prop),
+  eng_regularity_data %>%
+    rename(group = class, prop = class_prop)
+)
+
+
+# compare_props %>% spread(group, prop) %>% select(-age, -data_id) %>% ggcorplot()
+
+props <- compare_props %>% spread(group, prop)
+cor(props$regular, props$verbs)
+
+# verb_data %>%
+#   ungroup() %>%
+#   select(data_id, language, verb, prop) %>%
+#   spread(verb, prop) %>%
+#   # group_by(language) %>%
+#   # summarise(cor = cor(verbs, non_verbs))
+# ggplot(aes(x = verbs, y = non_verbs)) +
+#   facet_wrap(~language) +
+#   geom_point()
+```
+
+```{r verb_summaries}
+verb_item_data <- read_feather("data/verb_item_data.feather")
+
+# how many kids produce each verb at each age
+verbs_by_item <- verb_item_data %>%
+  group_by(language, item_id, definition, age) %>%
+  summarise(num_true = sum(produces), total = n(),
+            num_false = total - num_true, prop = num_true / total)
+
+# how many verbs each kid produces
+verbs_by_kid <- verb_item_data %>%
+  group_by(language, data_id, age, production) %>%
+  summarise(num_true = sum(produces), total = n(),
+            num_false = total - num_true, prop = num_true / total) #%>%
+  # left_join(num_words) %>%
+  # mutate(production_prop = production / words)
+
+kid_info <- verbs_by_kid %>%
+  ungroup() %>%
+  select(language, data_id, age, verbs_prop = prop)
+write_feather(kid_info, "data/kid_info.feather")
+```
+
+```{r get_morph_data}
+morph_verb_data_raw <- morph_items %>%
+  filter(lexical_category == "verbs", group %in% c("correct", "overregularized"),
+         !is.na(stem)) %>%
+  group_by(language) %>%
+  filter("correct" %in% group & "overregularized" %in% group) %>%
+  select(language, item_id, num_item_id, definition) %>%
+  nest(items = -language) %>%
+  mutate(data = map2(language, items, get_item_data))
+
+morph_verb_data <- morph_verb_data_raw %>%
+  mutate(data = map(data, ~select(., data_id, age, num_item_id, value))) %>%
+  select(-items) %>%
+  unnest(cols = c(data)) %>%
+  left_join(morph_items) %>%
+  mutate(produces = !is.na(value) & value == "produces") %>%
+  select(-value) %>%
+  select(language, item_id, definition, data_id, age, produces, group, stem)
+
+write_feather(morph_verb_data, "data/morph_verb_data.feather")
+```
+
+```{r morph_summaries}
+morph_verb_data <- read_feather("data/morph_verb_data.feather")
+
+# how many kids produce each morphological item at each age
+morph_by_item <- morph_verb_data %>%
+  group_by(language, group, item_id, definition, stem, age) %>%
+  summarise(num_true = sum(produces), total = n(),
+            num_false = total - num_true, prop = num_true / total)
+
+# how many morphological items each kid produces
+# TODO: why do danish/quebecois kids not know anything
+morph_by_kid <- morph_verb_data %>%
+  group_by(language, group, data_id, age) %>%
+  summarise(num_true = sum(produces), total = n(),
+            num_false = total - num_true, prop = num_true / total) %>%
+  left_join(kid_info)
+```
+
+```{r}
+# why is danish so low???
+#
+# morph_by_item %>% ungroup() %>% filter(language == "Danish") %>%
+#   ggplot(aes(x = age, y = prop, colour = group)) + facet_wrap(~stem) + geom_line(aes(group = definition))
+# 
+# morph_by_item %>% ungroup() %>% filter(language == "Norwegian") %>%
+#   ggplot(aes(x = age, y = prop, colour = group)) + facet_wrap(~stem) + geom_line(aes(group = definition))
+# 
+# morph_by_kid %>% ungroup() %>% filter(language == "Danish", str_detect(group, "over")) %>%
+#   arrange(desc(prop))
+# 
+# morph_by_item %>% ungroup() %>% filter(language == "Danish", str_detect(group, "over")) %>%
+#   arrange(desc(prop))
+# 
+# morph_verb_data %>% filter(language == "Danish")
+# 
+# morph_by_kid %>% ungroup() %>% group_by(language, group, prop) %>%
+#   summarise(n = n()) %>%
+#   group_by(language, group) %>%
+#   mutate(prop_kids = n / sum(n)) %>%
+#   # filter(prop != 0) %>%
+# ggplot(aes(x = prop, y = prop_kids)) + facet_grid(group ~ language) + geom_point()
+# 
+# ggplot(morph_by_kid %>% filter(prop != 0), aes(x = prop)) + geom_histogram() + facet_grid(group ~ language)
+# 
+# morph_verb_data %>% filter(language == "Danish", str_detect(group, "over"))
+# 
+# morph_by_kid %>% ungroup() %>%
+#   filter(language == "Danish", str_detect(group, "over")) %>%
+#   filter(num_true == max(num_true))
+# 
+# morph_by_item %>% ungroup() %>%
+#   filter(language == "Danish", str_detect(group, "over")) %>%
+#   filter(num_true == max(num_true))
+```
+
+```{r morph_measures}
+morph_verb_data <- read_feather("data/morph_verb_data.feather")
+verb_item_data <- read_feather("data/verb_item_data.feather")
+
+stem_data <- verb_item_data %>%
+  select(-item_id, -age, -production) %>%
+  rename(stem = definition, produces_stem = produces) %>%
+  inner_join(morph_verb_data %>% distinct(language, stem))
+
+morph_combined <- morph_verb_data %>% left_join(stem_data)
+
+morph_combined_group <- morph_combined %>%
+  group_by(language, data_id, stem, produces_stem, group) %>%
+  summarise(produces = any(produces)) %>% # combine overregularization types
+  ungroup()
+
+verb_stems <- words %>% filter(lexical_class == "verbs") %>%
+  select(language, stem = definition)
+all_form_items <- morph_items %>%
+  filter(group %in% c("correct", "overregularized"), lexical_category == "verbs") %>%
+  group_by(language, stem) %>%
+  filter("correct" %in% group & "overregularized" %in% group) %>%
+  select(language, stem, group, definition) %>%
+  group_by(language, stem) %>%
+  nest(items = c(group, definition)) %>%
+  inner_join(verb_stems)
+write_feather(all_form_items %>% unnest(cols = items), "data/all_form_items.feather")
+# all_form_items %>% ungroup() %>% count(language)
+
+morph_measure_values <- morph_combined_group %>%
+  inner_join(all_form_items %>% select(-items)) %>%
+  spread(group, produces)
+
+# morph_counts <- morph_measure_values %>%
+#   count(language, produces_stem, correct, overregularized) %>%
+#   rename(stem = produces_stem) %>%
+#   mutate(stem = if_else(stem, "stem", "!stem"),
+#          correct = if_else(correct, "correct", "!correct"),
+#          overregularized = if_else(overregularized, "overreg", "!overreg"),
+#          values = paste(stem, correct, overregularized, sep = " + "))
+# 
+# ggplot(morph_counts, aes(x = n, y = values)) +
+#   facet_wrap(~language, nrow = 1, scales = "free_x") +
+#   geom_colh()
+
+morph_measures_unfiltered <- morph_measure_values %>%
+  mutate(stem_only = produces_stem & !correct & !overregularized,
+         stem_correct = produces_stem & correct & !overregularized,
+         stem_overreg = produces_stem & overregularized) %>%
+  select(-produces_stem, -correct, -overregularized) %>%
+  gather(measure, value, stem_only, stem_correct, stem_overreg)
+
+write_feather(morph_measures_unfiltered, "data/morph_measures_unfiltered.feather")
+```
+
+```{r load_morph_measures}
+morph_measures_unfiltered <- read_feather("data/morph_measures_unfiltered.feather")
+kid_info <- read_feather("data/kid_info.feather")
+morph_measures_unfiltered %<>% left_join(kid_info)
+
+# morph_measure_labels <- c(
+#   "Stem only \n(e.g. says eat & not ate/eated/ated)" = "stem_only",
+#   "Stem + correct \n(e.g. says eat + ate & not eated/ated)" = "stem_correct",
+#   "Stem + overregularized \n(e.g. says eat + eated/ated)" = "stem_overreg"
+# )
+```
+
+```{r}
+morph_kid_types <- morph_by_kid %>%
+  group_by(language, group, data_id) %>%
+  summarise(any_group = any(prop > 0)) %>%
+  group_by(language, data_id) %>%
+  mutate(any = any(any_group)) %>%
+  ungroup()
+
+# morph_kid_types %>%
+#   count(language, group, any_group) %>%
+#   group_by(language, group) %>%
+#   mutate(p = n / sum(n)) %>%
+#   ggplot(aes(x = group, y = p, fill = any_group)) +
+#   facet_wrap(~language, nrow = 1) +
+#   geom_col(position = "stack") +
+#   .scale_fill_discrete()
+
+inflecting_kids <- morph_kid_types %>%
+  filter(any) %>%
+  distinct(language, data_id)
+overregularizing_kids <- morph_kid_types %>%
+  filter(group == "overregularized", any_group) %>%
+  distinct(language, data_id)
+
+morph_measures_inflecting <- morph_measures %>%
+  inner_join(inflecting_kids) %>%
+  left_join(kid_info)
+write_feather(morph_measures_inflecting, "data/morph_measures_inflecting.feather")
+
+morph_measures_overregularizing <- morph_measures %>%
+  inner_join(overregularizing_kids) %>%
+  left_join(kid_info)
+write_feather(morph_measures_overregularizing, "data/morph_measures_overregularizing.feather")
+```
+
+```{r plot_morph_measures}
+# morph_measures %>%
+#   mutate(measure = measure %>%
+#            fct_relevel(!!!morph_measure_labels) %>%
+#            fct_recode(!!!morph_measure_labels)) %>%
+# ggplot(aes(x = verbs_prop, y = ..count.., fill = value)) +
+#   facet_grid(measure ~ language) +
+#   coord_fixed() +
+#   geom_density(position = "fill") +
+#   scale_fill_manual(values = c("white", .pal(1)), guide = FALSE) +
+#   scale_x_continuous(expand = c(0, 0)) +
+#   scale_y_continuous(expand = c(0, 0)) +
+#   labs(x = "Verb vocabulary (proportion of items)", y = "Conditional density of production")
+```
+
+
+
+```{r setup_julia}
+library(JuliaCall)
+library(jglmm)
+source("julia_funs.R")
+options(JULIA_HOME = "/Applications/Julia-1.2.app/Contents/Resources/julia/bin")
+jglmm_setup()
+
+fit_morph_model <- function(formula, training_data, testing_data, group) {
+  print("fitting model...")
+  train_model <- jglmm(formula, family = "bernoulli", data = training_data)
+  print("getting ranefs...")
+  train_ranefs <- jglmm_ranef(train_model, "stem")
+  print("getting coefs...")
+  train_coefs <- tidy(train_model)
+  print("getting predictions...")
+  test_predictions <- jglmm_predict(train_coefs, train_ranefs, formula,
+                                    testing_data, group)
+  print("getting model metrics...")
+  loglik <- julia_eval("loglikelihood(model)")
+  dof <- julia_eval("dof(model)")
+  nobs <- julia_eval("nobs(model)")
+  list(coefs = train_coefs, ranefs = train_ranefs,
+       predictions = test_predictions, formula = formula,
+       loglik = loglik, dof = dof, nobs = nobs)
+}
+```
+
+```{r model_funs}
+fit_dataset_sample <- function(formula, dataset, group, i) {
+  print(i)
+  if (all(unique(dataset$sample) == i)) {
+    training_data <- dataset
+    testing_data <- dataset
+  } else {
+    training_data <- dataset %>% filter(sample != i)
+    testing_data <- dataset %>% filter(sample == i)
+  }
+  fit_morph_model(formula, training_data, testing_data, group)
+}
+
+fit_dataset_formula <- function(formula, dataset, group, k) {
+  print(formula)
+  map(1:k, ~fit_dataset_sample(formula, dataset, group, .))
+}
+
+partition_dataset <- function(lang_measure_data, k) {
+  partitioned_ids <- lang_measure_data %>%
+    distinct(data_id) %>%
+    mutate(sample = sample(rep(1:k, ceiling(n() / k))[1:n()]))
+  lang_measure_data %>% left_join(partitioned_ids)
+}
+
+fit_dataset <- function(formulas, lang_measure_data, group, k) {
+  partitioned_data <- partition_dataset(lang_measure_data, k)
+  map(formulas, ~fit_dataset_formula(., partitioned_data, group, k))
+}
+```
+
+```{r fit_models}
+formulas_intercepts <- list(
+  "null" = "(1|stem)",
+  "age" = "age + (1|stem)",
+  "vocab" = "verbs_prop + (1|stem)",
+  "age_vocab_linear" = "age + verbs_prop + (1|stem)",
+  "age_vocab_quadratic" = "age + verbs_prop + verbs_prop^2 + (1|stem)",
+  "age_vocab_linear_int" = "age * verbs_prop + (1|stem)",
+  "age_vocab_quadratic_int" = "age * verbs_prop + age * verbs_prop^2 + (1|stem)"
+) %>%
+  map(~as.formula(paste("value ~", .)))
+
+fit_lang <- function(morph_data, lang, formulas, dir) {
+  
+  lang_stem_only <- morph_data %>%
+    filter(language == lang, measure == "stem_only")
+  lang_stem_correct <- morph_data %>%
+    filter(language == lang, measure == "stem_correct")
+  lang_stem_overreg <- morph_data %>%
+    filter(language == lang, measure == "stem_overreg")
+  
+  lang_stem_overreg_fits <- fit_dataset(formulas, lang_stem_overreg, "stem", 1)
+  save(lang_stem_overreg_fits, file = glue("{dir}/{lang}_stem_overreg_fits.RData"))
+  lang_stem_correct_fits <- fit_dataset(formulas, lang_stem_correct, "stem", 1)
+  save(lang_stem_correct_fits, file = glue("{dir}/{lang}_stem_correct_fits.RData"))
+  lang_stem_only_fits <- fit_dataset(formulas, lang_stem_only, "stem", 1)
+  save(lang_stem_only_fits, file = glue("{dir}/{lang}_stem_only_fits.RData"))
+  
+  lang_fits <- list(stem_only = lang_stem_only_fits,
+                    stem_correct = lang_stem_correct_fits,
+                    stem_overreg = lang_stem_overreg_fits)
+  save(lang_fits, file = glue("{dir}/{lang}_fits.RData"))
+
+}
+
+fit_lang(morph_measures_inflecting, "English (American)",
+         formulas_intercepts, "data/fits/intercepts/inflecting")
+fit_lang(morph_measures_inflecting, "English (Australian)",
+         formulas_intercepts, "data/fits/intercepts/inflecting")
+fit_lang(morph_measures_inflecting, "Danish",
+         formulas_intercepts, "data/fits/intercepts/inflecting")
+fit_lang(morph_measures_inflecting, "Norwegian",
+         formulas_intercepts, "data/fits/intercepts/inflecting")
+
+fit_lang(morph_measures_overregularizing, "English (American)",
+         formulas_intercepts, "data/fits/intercepts/overregularizing")
+fit_lang(morph_measures_overregularizing, "English (Australian)",
+         formulas_intercepts, "data/fits/intercepts/overregularizing")
+fit_lang(morph_measures_overregularizing, "Danish",
+         formulas_intercepts, "data/fits/intercepts/overregularizing")
+fit_lang(morph_measures_overregularizing, "Norwegian",
+         formulas_intercepts, "data/fits/intercepts/overregularizing")
+```
+
+```{r}
+# formulas_slopes <- formulas_intercepts %>%
+#   map(as.character) %>%
+#   map(~.[3]) %>%
+#   map(function(form) {
+#     terms <- str_split(form, " \\+ ")[[1]]
+#     fixed <- terms %>% str_subset("\\|", negate = TRUE)
+#     fixed <- if (length(fixed) == 0) "1" else paste(fixed, collapse = " + ")
+#     random <- terms %>% str_subset("\\|") %>% str_replace("1 \\|", paste(fixed, "|"))
+#     paste(fixed, random, sep = " + ")
+#   }) %>%
+#   map(~as.formula(paste("value ~", .)))
+
+formulas_slopes_quadratic <- list(
+  "age_vocab_quadratic" = "age + verbs_prop + verbs_prop^2 + (1 + age + verbs_prop | stem)"
+) %>%
+  map(~as.formula(paste("value ~", .)))
+
+fit_lang("English (American)", formulas_slopes_quadratic, "data/fits/slopes")
+# fit_lang("English (Australian)", formulas_slopes, "data/fits/slopes")
+fit_lang("Danish", formulas_slopes_quadratic, "data/fits/slopes")
+fit_lang("Norwegian", formulas_slopes_quadratic, "data/fits/slopes")
+
+# formulas_slopes_linear <- list(
+#   "age_vocab_linear" = "age + verbs_prop + (1 + age + verbs_prop | stem)"
+# ) %>%
+#   map(~as.formula(paste("value ~", .)))
+# fit_lang("English (Australian)", formulas_slopes_linear, "data/fits/slopes")
+```
+
+```{r extractors_and_formatters}
+extract_predictions <- function(fits, measure) {
+  fits %>%
+    map_df(function(model_fits) {
+      map_df(model_fits, function(model_fits_i) {
+        model_fits_i$predictions %>% mutate(formula = as.character(model_fits_i$formula)[3])
+      })
+    }) %>%
+    mutate(measure = measure)
+}
+
+extract_coefs <- function(fits, measure) {
+  fits %>%
+    map_df(function(model_fits) {
+      map_df(model_fits, function(model_fits_i) {
+        model_fits_i$coefs %>% mutate(formula = as.character(model_fits_i$formula)[3])
+      })
+    }) %>%
+    mutate(measure = measure)
+}
+
+extract_ranefs <- function(fits, measure) {
+  fits %>%
+    map_df(function(model_fits) {
+      map_df(model_fits, function(model_fits_i) {
+        model_fits_i$ranefs %>% mutate(formula = as.character(model_fits_i$formula)[3])
+      })
+    }) %>%
+    gather(term, estimate, -stem, -formula) %>%
+    mutate(measure = measure)
+}
+
+extract_metrics <- function(fits, measure) {
+  metrics <- fits %>%
+    map_df(function(model_fits) {
+      map_df(model_fits, function(model_fits_i) {
+        tibble(loglik = model_fits_i$loglik,
+               dof = model_fits_i$dof,
+               nobs = model_fits_i$nobs,
+               formula = as.character(model_fits_i$formula)[3])
+      })
+    }) %>%
+    mutate(null = map_lgl(formula, ~str_detect(., "^\\(")),
+           measure = measure) 
+  
+  if (any(metrics$null)) {
+    metrics %>%
+      mutate(loglik_null = filter(., null)$loglik,
+             rsq = 1 - (loglik / loglik_null)) %>%
+      select(-null, -loglik_null)
+  } else {
+    metrics %>% select(-null)
+  }
+}
+```
+
+```{r load_fits}
+# lang_fits:
+# | measure
+#   | formula
+#     | sample
+#       | coefs
+#       | ranefs
+#       | predictions
+#       | formula
+#       | loglik
+#       | dof
+#       | nobs
+  
+load_lang_fits <- function(dir, lang) {
+  print(lang)
+  load(glue("{dir}/{lang}_fits.RData"))
+  
+  lang_metrics <- map2_df(lang_fits, names(lang_fits), extract_metrics)
+  lang_predictions <- map2_df(lang_fits, names(lang_fits), extract_predictions)
+  lang_coefs <- map2_df(lang_fits, names(lang_fits), extract_coefs)
+  lang_ranefs <- map2_df(lang_fits, names(lang_fits), extract_ranefs)
+  
+  rm(lang_fits)
+  list(lang_metrics = lang_metrics, lang_predictions = lang_predictions,
+       lang_coefs = lang_coefs, lang_ranefs = lang_ranefs) %>%
+    map(~mutate(., language = lang))
+}
+
+load_dir_fits <- function(dir, langs) {
+  all_fits <- langs %>% map(~load_lang_fits(dir, .)) %>%
+    transpose() %>% map(bind_rows)
+  
+  aic <- function(loglik, dof)  2 * dof - 2 * loglik
+  bic <- function(loglik, dof, nobs) dof * log(nobs) - 2 * loglik
+  bf_bic <- function(bic_full, bic_null) exp((bic_null - bic_full) / 2)
+  all_metrics <- all_fits$lang_metrics %>%
+    mutate(aic = aic(loglik, dof),
+           bic = bic(loglik, dof, nobs))
+  write_feather(all_metrics, glue(dir, "all_metrics.feather"))
+  
+  all_predictions <- all_fits$lang_predictions %>%
+    mutate(.response = gtools::inv.logit(.fitted))
+  write_feather(all_predictions, glue(dir, "all_predictions.feather"))
+  
+  all_coefs <- all_fits$lang_coefs %>%
+    mutate(signif = p.value < 0.05)
+  write_feather(all_coefs, glue(dir, "all_coefs.feather"))
+  
+  all_ranefs <- all_fits$lang_ranefs
+  write_feather(all_ranefs, glue(dir, "all_ranefs.feather"))
+}
+
+langs <- list("English (American)", "English (Australian)", "Danish", "Norwegian")
+load_dir_fits("data/fits/intercepts/inflecting/", langs)
+load_dir_fits("data/fits/intercepts/overregularizing/", langs)
+```
+
+```{r}
+slopes_langs <- list("English (American)", "Danish", "Norwegian")
+slopes_fits <- slopes_langs %>% map(~load_lang_fits("data/fits/slopes", .)) %>%
+  transpose() %>% map(bind_rows)
+slopes_coefs <- slopes_fits$lang_coefs
+slopes_ranefs <- slopes_fits$lang_ranefs
+write_feather(slopes_coefs, "data/slopes_coefs.feather")
+write_feather(slopes_ranefs, "data/slopes_ranefs.feather")
+```
+
+```{r crossval_models}
+k <- 10 # k-fold cross-validation
+
+crossval_lang <- function(lang) {
+  
+  lang_stem_only <- morph_measures %>%
+    filter(language == lang, measure == "stem_only")
+  lang_stem_correct <- morph_measures %>%
+    filter(language == lang, measure == "stem_correct")
+  lang_stem_overreg <- morph_measures %>%
+    filter(language == lang, measure == "stem_overreg")
+  
+  lang_stem_only_crossval <- fit_dataset(formulas_intercepts, lang_stem_only, "stem", k)
+  lang_stem_correct_crossval<- fit_dataset(formulas_intercepts, lang_stem_correct, "stem", k)
+  lang_stem_overreg_crossval <- fit_dataset(formulas_intercepts, lang_stem_overreg, "stem", k)
+  
+  lang_crossval <- list(stem_only = lang_stem_only_crossval,
+                        stem_correct = lang_stem_correct_crossval,
+                        stem_overreg = lang_stem_overreg_crossval)
+  save(lang_crossval, file = glue("data/crossval/{lang}_crossval.RData"))
+  rm(lang_crossval)
+  
+}
+
+crossval_lang("English (American)")
+crossval_lang("English (Australian)")
+crossval_lang("Danish")
+crossval_lang("Norwegian")
+```
+
+```{r load_crossval}
+load_lang_crossval <- function(lang) {
+  
+  load(glue("data/crossval/{lang}_crossval.RData"))
+  lang_crossval_predictions <- map2_df(lang_crossval, names(lang_crossval),
+                                       extract_predictions)
+  rm(lang_crossval)
+  lang_crossval_predictions
+  
+}
+
+langs <- list("English (American)", "English (Australian)", "Danish", "Norwegian")
+all_predictions <- langs %>%
+  map_df(load_lang_crossval) %>%
+  mutate(.response = gtools::inv.logit(.fitted))
+
+all_mse <- all_predictions %>%
+  group_by(language, measure, formula, sample) %>%
+  summarise(mse = mean((.response - value) ^ 2))
+
+mean_mse <- all_mse %>%
+  group_by(language, measure, formula) %>%
+  summarise(mean_mse = mean(mse))
+
+# take geometric mean across langs?
+#
+# geo_mean <- function(x) prod(x) ^ (1 / length(x))
+# geom_mean_mse <- all_mse %>%
+#   group_by(measure, formula) %>%
+#   summarise(geo_mean_mse = geo_mean(mse))
+# 
+# best_models_geo <- geom_mean_mse %>%
+#   group_by(measure) %>%
+#   filter(geo_mean_mse == min(geo_mean_mse))
+# 
+# mse_geo_means <- all_mse %>%
+#   mutate(rmse = sqrt(mse)) %>%
+#   group_by(measure, formula) %>%
+#   mutate(geo_mean_mse = geo_mean(mse),
+#          geo_mean_rmse = geo_mean(rmse)) %>%
+#   left_join(all_metrics)
+# mean_mse %>%
+#   group_by(measure, formula) %>%
+#   summarise(geo_mean_mse = geo_mean(mean_mse)) %>%
+#   group_by(measure) %>%
+#   filter(geo_mean_mse == min(geo_mean_mse))
+
+all_metrics <- read_feather("data/fits/all_metrics.feather")
+model_comparison <- mean_mse %>%
+  ungroup() %>%
+  # left_join(geom_mean_mse) %>%
+  left_join(all_metrics)
+write_feather(model_comparison, "data/model_comparison.feather")
+
+best_models_mse <- model_comparison %>%
+  group_by(language, measure) %>%
+  filter(mean_mse == min(mean_mse)) %>%
+  ungroup() %>%
+  select(language, measure, formula, mean_mse)
+
+best_models_length <- model_comparison %>%
+  group_by(measure) %>%
+  filter(str_length(formula) == max(str_length(formula))) %>%
+  ungroup() %>%
+  select(language, measure, formula, mean_mse)
+
+best_models <- best_models_length
+write_feather(best_models, "data/best_models/best_models.feather")
+write_feather(best_models_mse, "data/best_models/best_models_mse.feather")
+```
+
+
+```{r demo_predictions}
+all_coefs <- bind_rows(
+  read_feather("data/fits/intercepts/inflecting/all_coefs.feather") %>%
+    mutate(dataset = "inflecting"),
+  read_feather("data/fits/intercepts/overregularizing/all_coefs.feather") %>%
+    mutate(dataset = "overregularizing")
+)
+
+all_ranefs <- bind_rows(
+  read_feather("data/fits/intercepts/inflecting/all_ranefs.feather") %>%
+    mutate(dataset = "inflecting"),
+  read_feather("data/fits/intercepts/overregularizing/all_ranefs.feather") %>%
+    mutate(dataset = "overregularizing")
+)
+
+best_coefs <- all_coefs %>% inner_join(best_models)
+write_feather(best_coefs, "data/best_models/best_coefs.feather")
+
+best_ranefs <- all_ranefs %>%
+  inner_join(best_models) %>% #select(language, measure, formula)) %>%
+  select(language, measure, dataset, stem, term, estimate) %>%
+  spread(term, estimate) %>%
+  nest(ranefs = c(-language, -measure, -dataset))
+
+demo_data <- best_coefs %>%
+  nest(coefs = c(-language, -measure, -dataset, -formula)) %>%
+  left_join(best_ranefs) %>%
+  mutate(stems = map(ranefs, ~.$stem)) %>%
+  left_join(num_words_class %>% filter(lexical_class == "verbs") %>%
+              ungroup() %>%
+              select(language, n_verbs = words)) %>%
+  mutate(formula = map(formula, ~as.formula(paste("value ~", formula))))
+
+# morph_measures_inflecting %>%
+#   distinct(language, data_id, age, verbs_prop) %>%
+#   group_by(language, age) %>%
+#   left_join(num_words_class %>% filter(lexical_class == "verbs")) %>%
+#   mutate(verbs = verbs_prop * words) %>%
+#   summarise(mean_verbs = mean(verbs),
+#             min_verbs = min(verbs),
+#             max_verbs = max(verbs),
+#             sd_verbs = sd(verbs)) %>%
+#   filter(age %in% demo_ages)
+  # ggplot(aes(x = age, y = verbs_prop)) +
+  #   facet_wrap(~language, nrow = 1) +
+  #   geom_point()
+
+# demo_ages <- c(18, 24, 30)
+demo_ages <- c(24, 30, 36)
+demo_verbs <- c(40, 70, 100)
+
+source("julia_funs.R")
+demo_predictions <- demo_data %>%
+  mutate(
+    demo_data_ages = map2(stems, n_verbs, function(s, n) {
+      cross_df(list(age = demo_ages, verbs = seq(0:n), stem = s)) %>%
+        mutate(value = 0, verbs_prop = verbs / n)
+    }),
+    predictions_age = pmap(list(coefs, ranefs, formula, demo_data_ages, "stem"), jglmm_predict),
+    
+    demo_data_verbs = map2(stems, n_verbs, function(s, n) {
+      cross_df(list(age = 16:30, verbs = demo_verbs, stem = s)) %>%
+        mutate(value = 0, verbs_prop = verbs / n)
+    }),
+    predictions_verbs = pmap(list(coefs, ranefs, formula, demo_data_verbs, "stem"), jglmm_predict)
+  )
+
+demo_predictions_age_stem <- demo_predictions %>%
+  select(language, measure, dataset, predictions_age) %>%
+  unnest(cols = predictions_age) %>%
+  mutate(.response = gtools::inv.logit(.fitted))
+write_feather(demo_predictions_age_stem, "data/demo/demo_predictions_age_stem.feather")
+
+demo_predictions_age <- demo_predictions_age_stem %>%
+  group_by(language, measure, age, verbs) %>%
+  summarise(.response = mean(.response)) %>%
+  ungroup()
+write_feather(demo_predictions_age, "data/demo/demo_predictions_age.feather")
+
+# demo_predictions_verbs <- demo_predictions %>%
+#   select(language, measure, predictions_verbs) %>%
+#   unnest(cols = predictions_verbs) %>%
+#   mutate(.response = gtools::inv.logit(.fitted))
+# 
+# demo_predictions_verbs_means <- demo_predictions_verbs %>%
+#   group_by(language, measure, age, verbs) %>%
+#   summarise(.response = mean(.response)) %>%
+#   ungroup() %>%
+#   mutate(verbs_print = paste(verbs, "verbs"),
+#          measure_print = format_measures(measure),
+#          language = fct_reorder(language, str_length(language)))
+
+# plot_coefs <- demo_data %>%
+#   select(language, measure, coefs) %>%
+#   unnest(cols = coefs) %>%
+#   filter(str_detect(term, "age")) %>%
+#   select(language, measure, term, estimate) %>%
+#   mutate(exp_estimate = exp(estimate),
+#          term_print = format_terms(term) %>% fct_relabel(~str_replace(., "\\^2", "²")),
+#          direction = if_else(estimate > 0, "↑", "↓"),
+#          coef_print = glue("{term_print}: {sprintf('%.2f', exp_estimate)} {direction}"))
+```
+
+```{r demo_age_plots, fig.width=6, fig.height=3}
+# plot_demo_age <- function(meas, effect = "all") {
+#   measure_age_predictions <- demo_predictions_age_means %>% filter(measure == meas)
+#   if (effect == "main") measure_age_predictions %<>% filter(age == min(age))
+#   measure_coefs <- plot_coefs %>% filter(measure == meas)
+#   if (effect == "main")  measure_coefs %<>% filter(term == "age")
+#   measure_coefs <- measure_coefs %>%
+#     group_by(language) %>%
+#     summarise(coef_print = paste(coef_print, collapse = "\n"))
+#   ggplot(measure_age_predictions, aes(x = verbs, y = .response, colour = age_print)) +
+#     facet_grid(. ~ language, scales = "free_y") +
+#     geom_line() +
+#     geom_dl(aes(label = age_print),
+#             method = list("last.qp", dl.trans(x = x + 0.2), fontfamily = .font)) +
+#     geom_text(aes(label = coef_print), x = 45, y = max(measure_age_predictions$.response),
+#               colour = "black", family = .font, size = 3.5, hjust = 1, vjust = 1,
+#               data = measure_coefs) +
+#     expand_limits(x = 130) +
+#     scale_x_continuous(breaks = c(10, 40, 70, 100)) +
+#     .scale_colour_discrete(guide = FALSE) +
+#     labs(x = "Verb vocabulary size",
+#          y = "Probability of producing",
+#          title = unique(measure_age_predictions$measure_print))
+# }
+# 
+# plot_demo_age("stem_only", "main")
+# plot_demo_age("stem_only")
+# 
+# plot_demo_age("stem_correct", "main")
+# plot_demo_age("stem_correct")
+# 
+# plot_demo_age("stem_overreg", "main")
+# plot_demo_age("stem_overreg")
+```
+
+```{r}
+# plot_demo_verbs <- function(meas, effect = "all") {
+#   measure_verbs_predictions <- demo_predictions_verbs_means %>% filter(measure == meas)
+#   if (effect == "main") measure_verbs_predictions %<>% filter(verbs == min(verbs))
+#   measure_coefs <- plot_coefs %>% filter(measure == meas)
+#   if (effect == "main")  measure_coefs %<>% filter(term == "verbs")
+#   measure_coefs <- measure_coefs %>%
+#     group_by(language) %>%
+#     summarise(coef_print = paste(coef_print, collapse = "\n"))
+#   ggplot(measure_verbs_predictions, aes(x = age, y = .response, colour = verbs_print)) +
+#     facet_grid(. ~ language, scales = "free_y") +
+#     geom_line() +
+#     geom_dl(aes(label = verbs_print),
+#             method = list("last.qp", dl.trans(x = x + 0.2), fontfamily = .font)) +
+#     geom_text(aes(label = coef_print), #colour = direction), 
+#               x = 20, y = max(measure_verbs_predictions$.response),
+#               colour = "black",
+#               family = .font, size = 3.5, hjust = 1, vjust = 1,
+#               data = measure_coefs) +
+#     expand_limits(x = 33) +
+#     scale_x_continuous(breaks = demo_ages) +
+#     .scale_colour_discrete(guide = FALSE) +
+#     labs(x = "Age (months)",
+#          y = "Probability of producing",
+#          title = unique(measure_verbs_predictions$measure_print))
+# }
+# 
+# plot_demo_verbs("stem_only", "main")
+# plot_demo_verbs("stem_only")
+# 
+# plot_demo_verbs("stem_correct", "main")
+# plot_demo_verbs("stem_correct")
+# 
+# plot_demo_verbs("stem_overreg", "main")
+# plot_demo_verbs("stem_overreg")
+```
+
+```{r}
+slopes_ranefs_nest <- slopes_ranefs %>%
+  select(language, measure, stem, term, estimate) %>%
+  spread(term, estimate) %>%
+  nest(ranefs = c(-language, -measure))
+
+demo_data_slopes <- slopes_coefs %>%
+  nest(coefs = c(-language, -measure, -formula)) %>%
+  left_join(slopes_ranefs_nest) %>%
+  mutate(stems = map(ranefs, ~.$stem)) %>%
+  left_join(num_words_class %>% filter(lexical_class == "verbs") %>%
+              ungroup() %>%
+              select(language, n_verbs = words)) %>%
+  mutate(formula = map(formula, ~as.formula(paste("value ~", formula))))
+
+# demo_ages <- c(24, 30, 36)
+# demo_verbs <- c(40, 70, 100)
+
+demo_predictions_slopes <- demo_data_slopes %>%
+  mutate(
+    demo_data_ages = map2(stems, n_verbs, function(s, n) {
+      cross_df(list(age = demo_ages, verbs = seq(0:n), stem = s)) %>%
+        mutate(value = 0, verbs_prop = verbs / n)
+    }),
+    predictions_age = pmap(list(coefs, ranefs, formula, demo_data_ages, "stem"), jglmm_predict),
+    
+    demo_data_verbs = map2(stems, n_verbs, function(s, n) {
+      cross_df(list(age = 16:30, verbs = demo_verbs, stem = s)) %>%
+        mutate(value = 0, verbs_prop = verbs / n)
+    }),
+    predictions_verbs = pmap(list(coefs, ranefs, formula, demo_data_verbs, "stem"), jglmm_predict)
+  )
+
+demo_predictions_slopes_stem <- demo_predictions_slopes %>%
+  select(language, measure, predictions_age) %>%
+  unnest(cols = predictions_age) %>%
+  mutate(.response = gtools::inv.logit(.fitted))
+write_feather(demo_predictions_slopes_stem, "data/demo/demo_predictions_slopes_stem.feather")
+```
+

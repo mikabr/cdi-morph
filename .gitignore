@@ -1,0 +1,7 @@
+.DS_Store
+.Rhistory
+.Rproj.user/
+*_cache/
+deprecated/
+*.RData
+_*.feather

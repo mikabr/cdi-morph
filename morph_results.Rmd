@@ -1,0 +1,448 @@
+---
+title: "Morphological (Over-)Generalization"
+output:
+  html_document:
+    highlight: tango
+    theme: cosmo
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, cache=FALSE}
+library(knitr)
+library(feather)
+library(tidyverse)
+library(glue)
+library(magrittr)
+library(directlabels)
+library(ggstance)
+library(cowplot)
+
+.font <- "Source Sans Pro"
+theme_set(langcog::theme_mikabr(base_family = .font))
+# theme_update(plot.margin = margin(0, 0, 2, 0, "pt"),
+#              legend.margin = margin(0, 0, 0, 0, "pt"))
+.grey <- "grey70"
+.refline <- "dotted"
+.coef_line <- element_line(colour = .grey, size = 0.1)
+.scale_colour_discrete <- ggthemes::scale_colour_ptol
+.scale_fill_discrete <- ggthemes::scale_fill_ptol
+.scale_colour_continuous <- viridis::scale_colour_viridis
+.scale_fill_continuous <- viridis::scale_fill_viridis
+.pal <- ggthemes::ptol_pal()
+
+opts_chunk$set(message = FALSE, warning = FALSE, cache = TRUE, echo = FALSE)
+```
+
+```{r load_morph_measures}
+format_languages <- function(languages) {
+  languages %>% fct_reorder(str_length(.))
+}
+
+morph_measure_labels <- c(
+  "Stem only" = "stem_only",
+  "Stem + correct" = "stem_correct",
+  "Stem + overregularized" = "stem_overreg"
+)
+
+format_measures <- function(measures) {
+  measures %>%
+    as_factor() %>%
+    fct_relevel(morph_measure_labels) %>%
+    fct_recode(!!!morph_measure_labels) %>%
+    fct_relabel(~str_replace(., " \\(", "\n\\("))
+}
+
+format_formulas <- function(formulas) {
+  fac_formulas <- formulas %>% as_factor()
+  formatted_levels <- levels(fac_formulas) %>%
+    str_remove("\\(1 \\| stem\\)") %>%
+    str_remove(" \\+ $") %>%
+    str_replace_all("verbs_prop", "verbs") %>%
+    str_replace_all("\\^2", "²") %>%
+    str_replace("^$", "1")
+  fac_formulas %>%
+    fct_recode(!!!set_names(levels(fac_formulas), formatted_levels))
+}
+
+format_terms <- function(terms) {
+  terms %>%
+    str_replace_all("verbs_prop", "verbs") %>%
+    str_replace_all(" \\^ 2", "²") %>%
+    fct_reorder(str_length(.)) %>%
+    fct_relevel("(Intercept)")
+}
+
+kid_info <- read_feather("data/kid_info.feather")
+
+morph_measures <- read_feather("data/morph_measures_inflecting.feather") %>%
+  mutate(language_print = format_languages(language),
+         measure_print = format_measures(measure)) %>%
+  left_join(kid_info)
+```
+
+- To what extent is morphology learning driven by vocabulary size vs. age?
+- Strawmen theoretical predictions: constructivist that only vocabulary size matters since morphology is generalizing from input, nativist that only age matters since morphology is on a maturational timetable.
+- Instead of binary choice between extreme strawmen, doing a data-driven characterization of the relationship between morphology learning, lexical learning, and development -- across languages (unfortunately not many though).
+
+# Data
+
+- Four language datasets (American English, Australian English, Danish, Norwegian) CDI WS which have both correct and overregularized forms
+- Include verb types for which there’s all three of: stem on vocab checklist (e.g. _go_), correct morphological inflection (e.g. _went_), and overregularized form(s) (e.g. _goed_, _wented_)
+- Item coding: https://docs.google.com/spreadsheets/d/1BdpCjlZa3nyF_h091bsjjFgHLkoe-mRf-eGOCZRP75Q
+- Exclude kids who don't produce at least one inflection/overregularization (i.e. dataset of kids who exhibit at least some usage of morphology).
+- Following Marchman 1992, for each child on each verb type, code it as:
+    - "stem only" if child says stem, doesn’t say inflection nor overregularization(s)
+      e.g. says eat, doesn't say any of ate/eated/ated
+    - "stem + correct" if child says stem and says correct inflection, doesn’t say overregularization(s)
+      e.g. says eat and ate, doesn't say any of eated/ated
+    - "stem + overregularized" if child says stem and says overregularization(s), regardless of whether kid says correct inflection
+      e.g. says eat and any of eated/ated
+- There's a small proportion of cases where parent indicated that child doesn't say a stem but does say its inflection(s), probably noise.
+- For each child, also have age in months and verb vocabulary size (Action Words section of vocbaulary checklist).
+
+Sample sizes:
+```{r sample_sizes}
+sample_sizes <- morph_measures %>%
+  group_by(language, stem) %>%
+  count(name = "num_kids") %>%
+  group_by(language, num_kids) %>%
+  count(name = "num_stems") %>%
+  ungroup() %>%
+  arrange(num_stems)
+sample_sizes %>% kable()
+```
+
+Raw data over vocabulary size:
+```{r plot_morph_measures, fig.width=8, fig.height=6}
+ggplot(morph_measures, aes(x = verbs_prop, y = ..count.., fill = value)) +
+  facet_grid(measure_print ~ language_print) +
+  coord_fixed() +
+  geom_density(position = "fill") +
+  scale_fill_manual(values = c("white", .pal(1)), guide = FALSE) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(x = "Verb vocabulary (proportion of items)", y = "Conditional density of production")
+```
+
+- Stem only goes up and then down, somewhat an artifact of the method because children are running out of the verbs of the form while increasing their knowledge of morphology.
+- Correct inflection and overregularization both go up across vocab range, look non-linear.
+- Overregularization considerably lower than correct inflection.
+
+# Model selection
+
+- For each measure (stem only, stem + correct, stem + overregularized), predict true/false values from some combination of age, linear verb vocabulary size, quadratic verb vocabulary size, and interactions between age and verb vocabulary size.
+- All with random intercepts for stem.
+- For each model, cross-validate it by splitting data (by children) into 10 subsamples; for each subsample, train model on remaining 90% of data and predicting the value in the 10% subsample.
+- Evaluate prediction by computing mean squared prediction error (MSE), take mean MSE across subsamples.
+- Plot below shows 1 - mean MSE so that bigger is better, best model circles.
+
+```{r plot_models_mse, fig.width=7, fig.height=7}
+model_comparison <- read_feather("data/model_comparison.feather") %>%
+  mutate(language_print = format_languages(language),
+         measure_print = format_measures(measure),
+         formula_print = format_formulas(formula) %>% fct_reorder(dof))
+
+best_models <- read_feather("data/best_models/best_models.feather") %>%
+  mutate(language_print = format_languages(language),
+         measure_print = format_measures(measure),
+         formula_print = format_formulas(formula))
+best_models_mse <- read_feather("data/best_models/best_models_mse.feather") %>%
+  mutate(language_print = format_languages(language),
+         measure_print = format_measures(measure),
+         formula_print = format_formulas(formula))
+
+ggplot(model_comparison, aes(x = 1 - mean_mse, y = fct_rev(formula_print),
+                             colour = language_print)) +
+  facet_grid(. ~ measure_print, scales = "free_x") +
+  geom_point() +
+  geom_point(aes(x = 1 - geo_mean_mse), colour = "black", size = 3,
+             data = model_comparison %>% distinct(measure_print, formula_print, geo_mean_mse)) +
+  # geom_point(size = 5, colour = "black", shape = 21, data = best_mse_models) +
+  .scale_colour_discrete(name = "") +
+  labs(x = "1 - (mean squared prediction error)", y = "Model") +
+  theme(legend.position = "top",
+        panel.grid.major.y = .coef_line)
+
+# mse_geo_means_print <- mse_geo_means %>%
+#   ungroup() %>%
+#   mutate(language_print = format_languages(language),
+#          measure_print = format_measures(measure),
+#          formula_print = format_formulas(formula) %>% fct_reorder(dof))
+# 
+# ggplot(mse_geo_means_print, aes(x = 1 - mse, y = fct_rev(formula_print))) +
+#   facet_grid(. ~ measure_print, scales = "free_x") +
+#   # geom_point() +
+#   ggridges::geom_density_ridges(aes(fill = language_print), alpha = 0.3, colour = .grey,
+#                                 rel_min_height = 0.03, scale = 0.8) +
+#   geom_point(aes(x = 1 - geo_mean_mse), colour = "black", size = 3,
+#              data = mse_geo_means_print %>%
+#                distinct(measure_print, formula_print, geo_mean_mse)) +
+#   # geom_point(size = 5, colour = "black", shape = 21, data = best_mse_models) +
+#   .scale_fill_discrete(name = "") +
+#   labs(x = "1 - (mean squared prediction error)", y = "Model") +
+#   theme(legend.position = "top",
+#         panel.grid.major.y = .coef_line)
+```
+
+- Most complex model (both quadratic vocab term and interactions) wins for all measures for all languages except Australian English.
+- Probably because Australian English is a much smaller sample than the others so it's overfitting.
+
+
+# Model results
+
+- For best models as selected above, fit to the whole dataset.
+- Look at various model predictions to understand effects (averaged over stems).
+
+```{r demo_age_plots}
+best_coefs <- read_feather("data/best_models/best_coefs.feather")
+plot_coefs <- best_coefs %>%
+  mutate(significant = if_else(p.value < 0.05, "*", ""),
+         language_print = format_languages(language),
+         term_print = format_terms(term) %>% fct_rev()) %>%
+  filter(term != "(Intercept)", dataset == "inflecting")
+
+demo_predictions_age <- read_feather("data/demo/demo_predictions_age.feather") %>%
+  mutate(age_print = paste(age, "mos"),
+         language_print = format_languages(language),
+         measure_print = format_measures(measure))
+
+plot_demo_coefs <- function(meas, effect = "all") {
+
+  measure_coefs <- plot_coefs %>% filter(measure == meas)
+  if (effect == "main")  measure_coefs %<>%
+      filter(str_detect(term, "verb"), str_detect(term, "&", negate = TRUE))
+  else measure_coefs %<>% filter(str_detect(term, "age"))
+  
+  ggplot(measure_coefs, aes(x = estimate, y = term_print)) +
+    facet_grid(. ~ language_print) +
+    geom_vline(xintercept = 0, linetype = .refline, colour = .grey) +
+    geom_pointrangeh(aes(xmin = estimate - 1.96 * std.error,
+                         xmax = estimate + 1.96 * std.error),
+                     position = position_dodgev(height = 0.5)) +
+    labs(x = "Coefficient estimate (log odds ratio)", y = "")
+
+}
+
+plot_demo_fits <- function(meas, effect = "all") {
+  
+  measure_age_fits <- demo_predictions_age %>% filter(measure == meas)
+  if (effect == "main") measure_age_fits %<>% filter(age == min(age))
+  
+  ggplot(measure_age_fits, aes(x = verbs, y = .response, colour = age_print)) +
+    facet_grid(. ~ language_print, scales = "free_y") +
+    geom_line() +
+    geom_dl(aes(label = age_print),
+            method = list("last.qp", dl.trans(x = x + 0.15), fontfamily = .font, cex = 0.7)) +
+    expand_limits(x = 130) +
+    scale_x_continuous(breaks = c(10, 40, 70, 100)) +
+    .scale_colour_discrete(guide = FALSE) +
+    labs(x = "Verb vocabulary size",
+         y = "Probability of producing")
+}
+
+demo_width <- 9.5
+demo_height <- 5
+```
+
+## Stem only
+
+```{r, dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height}
+# plot_demo_age("stem_only", "main")
+
+plot_demo_fits("stem_only", "main")
+plot_demo_coefs("stem_only", "main")
+plot_demo_fits("stem_only")
+plot_demo_coefs("stem_only")
+
+```
+
+- Positive linear effects of verb vocbaulary: more verbs means more likely to produce stem only.
+- Negative quadratic effect of verb vocabulary: more verbs first increases probability of producing stem only, but then decreases it.
+
+```{r, dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height}
+# plot_demo_age("stem_only")
+```
+
+- Negative effects of age: older children less likely produce stem only.
+- Positive interactions between age and linear verb vocabulary: larger effect of verb vocabulary for older children.
+- Negative interactions between age and quadratic verb vocabulary: curvier effect of verb vocabulary for younger children.
+
+## Stem + correct
+
+```{r, dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height}
+# plot_demo_age("stem_correct", "main")
+```
+
+- Positive linear effects of verb vocbaulary: more verbs means more likely to produce stem + correct.
+- Negative quadratic effect of verb vocabulary (except Australian English where it's not in the model): more verbs first increases probability of producing stem + correct, but then decreases it.
+
+```{r, dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height}
+# plot_demo_age("stem_correct")
+```
+
+- Positive effects of age: older children more likely produce stem + correct.
+- Negative interactions between age and linear verb vocabulary: larger effect of verb vocabulary for younger children.
+- Positive interactions between age and quadratic verb vocabulary: curvier effect of verb vocabulary for older children.
+
+## Stem + overregularized
+
+```{r, dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height}
+# plot_demo_age("stem_overreg", "main")
+```
+
+- Positive linear effects of verb vocbaulary: more verbs means more likely to produce stem + overregularized.
+- Positive quadratic effect of verb vocabulary: effect of verb vocabulary increases with verb vocabulary.
+  - Except Norwegian?
+
+```{r, dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height}
+# plot_demo_age("stem_overreg")
+```
+
+- Positive effects of age: older children more likely produce stem + overregularized.
+  - American English has weird noisy stuff happening at the end of the range.
+- Positive interactions between age and linear verb vocabulary: larger effect of verb vocabulary for older children.
+- Negative interactions between age and quadratic verb vocabulary: curvier effect of verb vocabulary for younger children.
+
+
+# Stems
+
+```{r, eval=FALSE}
+slopes_ranefs <- read_feather("data/slopes_ranefs.feather")
+
+slopes_ranefs_plot <- slopes_ranefs %>%
+  select(-formula) %>%
+  mutate(language_print = format_languages(language),
+         measure_print = format_measures(measure),
+         term_print = format_terms(term)) #%>%
+  # filter(term != "(Intercept)")
+
+slopes_ranefs_measure <- slopes_ranefs_plot %>%
+  select(-measure_print) %>%
+  spread(measure, estimate)
+
+# slopes_ranefs_measure %>%
+#   group_by(language, term) %>%
+#   summarise(cor_so_sc = cor(stem_only, stem_correct),
+#             cor_so_sov = cor(stem_only, stem_overreg),
+#             cor_sc_sov = cor(stem_correct, stem_overreg)) %>%
+#   arrange(term)
+
+ggplot(slopes_ranefs_measure, #%>% filter(language == "English (American)"),
+       aes(x = stem_correct, y = stem_overreg)) +
+  facet_grid(language ~ term_print, scales = "free") +
+  geom_vline(xintercept = 0, linetype = .refline, colour = .grey) +
+  geom_hline(yintercept = 0, linetype = .refline, colour = .grey) +
+  geom_text(aes(label = stem)) +
+  geom_smooth(method = "lm")
+  # labs(x = "Verbs coefficient (log odds ratio)",
+  #      y = "Age coefficient (log odds ratio")
+
+slopes_ranefs_term <- slopes_ranefs_plot %>%
+  select(-term_print) %>%
+  spread(term, estimate)
+slopes_ranefs_term %>%
+  group_by(language, measure) %>%
+  summarise(cor_age_verbs = cor(age, verbs_prop)) %>%
+  arrange(measure)
+
+ranefs_eng <- slopes_ranefs_plot %>%
+  filter(language == "English (American)", measure == "stem_overreg") %>%
+  arrange(term, estimate) %>%
+  mutate(order = factor(1:n()))
+ggplot(ranefs_eng, aes(x = estimate, y = order)) +
+  facet_wrap(~term, nrow = 1, scales = "free") +
+  geom_point() +
+  scale_y_discrete(breaks = ranefs_eng$order, labels = ranefs_eng$stem)
+```
+
+```{r, eval=FALSE}
+morph_by_stem <- morph_measures %>%
+  group_by(language, measure, age, stem) %>%
+  summarise(prop = mean(value), total = n()) %>%
+  ungroup() #%>%
+  # spread(measure, prop)
+
+ggplot(morph_by_stem, #%>% filter(language == "English (American)"),
+       aes(x = age, y = stem_overreg)) +
+  facet_grid(. ~ language, scales = "free") +
+  # geom_vline(xintercept = 0, linetype = .refline, colour = .grey) +
+  # geom_hline(yintercept = 0, linetype = .refline, colour = .grey) +
+  # geom_text(aes(label = stem)) +
+  # geom_smooth(method = "lm")
+  # geom_line(aes(group = stem)) +
+  geom_smooth(aes(group = stem), method = "glm", method.args = list(family = "binomial"), se = FALSE)
+
+stem_models <- morph_measures %>%
+  group_by(language, measure, stem) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(stem_model = map(data, function(stem_data) {
+    glm(value ~ age + verbs_prop, family = "binomial", data = stem_data)  #+ I(verbs_prop^2)
+  }))
+
+stem_effects <- stem_models %>%
+  mutate(coefs = map(stem_model, broom::tidy)) %>%
+  select(language, measure, stem, coefs) %>%
+  unnest(cols = coefs) %>%
+  select(language, measure, stem, term, indep_estimate = estimate) %>%
+  group_by(language, measure, term) %>%
+  mutate(indep_estimate = indep_estimate - mean(indep_estimate))
+
+stem_compare <- slopes_ranefs %>%
+  select(language, measure, stem, term, ranef_estimate = estimate) %>%
+  left_join(stem_effects)
+
+stem_compare %>%
+  group_by(language, measure, term) %>%
+  summarise(cor = cor(indep_estimate, ranef_estimate))
+
+ggplot(stem_compare %>% filter(language == "English (American)", term == "age"),
+       aes(x = indep_estimate, y = ranef_estimate)) +
+  # facet_grid(term ~ measure, scales = "free") +
+  facet_wrap(~measure, nrow = 1) +
+  coord_equal() +
+  geom_text(aes(label = stem))
+
+stem_effects %>%
+  spread(measure, indep_estimate) %>%
+  group_by(language, term) %>%
+  summarise(cor_sc_sov = cor(stem_correct, stem_overreg))
+
+slopes_ranefs %>%
+  select(language, measure, stem, term, ranef_estimate = estimate) %>%
+  spread(measure, ranef_estimate) %>%
+  group_by(language, term) %>%
+  summarise(cor_sc_sov = cor(stem_correct, stem_overreg))
+
+stem_effects %>%
+  spread(term, indep_estimate) %>%
+  group_by(language, measure) %>%
+  summarise(cor_age_verbs = cor(age, verbs_prop))
+
+slopes_ranefs %>%
+  select(language, measure, stem, term, ranef_estimate = estimate) %>%
+  spread(term, ranef_estimate) %>%
+  group_by(language, measure) %>%
+  summarise(cor_age_verbs = cor(age, verbs_prop))
+
+```
+
+```{r, eval=FALSE}
+vocab_compare <- all_coefs %>%
+  filter(#str_detect(term, "verbs"),
+    term == "age",
+         str_detect(term, "&", negate = TRUE),
+         str_detect(formula, "2"), dataset == "inflecting") %>%
+  select(language, measure, formula, term, estimate, std.error) %>%
+  mutate(language_print = format_languages(language),
+         measure_print = format_measures(measure),
+         formula_print = format_formulas(formula),
+         term_print = format_terms(term))
+
+ggplot(vocab_compare, aes(x = estimate, y = term_print, colour = formula_print)) +
+  facet_grid(measure_print ~ language_print) +
+  geom_vline(xintercept = 0, colour = .grey, linetype = .refline) +
+  geom_point() +
+  .scale_colour_discrete()
+```
