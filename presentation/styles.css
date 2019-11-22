@@ -1,0 +1,144 @@
+slides > slide {
+  font-family: "Source Sans Pro", arial, sans-serif;
+}
+
+.title-slide hgroup h1 {
+  font-size: 45px;
+  letter-spacing: -1px;
+}
+
+.title-slide hgroup p {
+  font-size: 24px;
+}
+
+slides > slide > hgroup + article {
+  margin-top: 20px;
+}
+
+slides > slide > hgroup + article p {
+  margin-bottom: 6px;
+}
+
+.small {
+  font-size: 80%;
+}
+
+.moresmall {
+  font-size: 60%;
+}
+
+ul {
+	position: relative;
+	list-style: none;
+/* margin-left: 0; */
+/*	padding-left: 1.2em; */
+}
+
+ul li:before {
+	content: "–";
+	position: absolute;
+	left: 0;
+	font-weight: 650;
+}
+
+
+slides > slide.title-slide {
+  background-image: url("images/walrus.png");
+  background-size: 180px 180px;
+  background-repeat: no-repeat;
+  background-position: 20% 20%;
+}
+
+slides > slide {
+  background: linear-gradient(#ffffff, #ffffff 85%, #ffffff);
+  background-color: white;
+}
+
+article.flexbox {
+  margin-top: 0px;
+}
+
+.pagedtable-header-name {
+  font-size: 120%;
+  padding-bottom: 5px;
+}
+.pagedtable-header-type {
+  display: none;
+}
+.pagedtable-info {
+  display: none;
+}
+.pagedtable-wrapper {
+  border: 0px;
+}
+.pagedtable td {
+  font-size: 90%;
+}
+
+table.rmdtable td, table th {
+  font-size: 24px;
+}
+
+table.dataTable tbody td {
+  font-size: 80%;
+}
+
+.demo-img {
+  height: 200px;
+}
+
+.demo-img-tl {
+  position: absolute;
+  top: 40px;
+  left: 40px;
+}
+
+.demo-img-tr {
+  position: absolute;
+  top: 40px;
+  right: 40px;
+}
+
+.demo-img-bl {
+  position: absolute;
+  bottom: 40px;
+  left: 40px;
+}
+
+.demo-img-br {
+  position: absolute;
+  bottom: 40px;
+  right: 40px;
+}
+
+.demo-txt-tl {
+  position: absolute;
+  top: 240px;
+  left: 60px;
+}
+
+.demo-txt-tr {
+  position: absolute;
+  top: 240px;
+  right: 60px;
+}
+
+.demo-txt-bl {
+  position: absolute;
+  bottom: 250px;
+  left: 60px;
+}
+
+.demo-txt-br {
+  position: absolute;
+  bottom: 250px;
+  right: 60px;
+}
+
+.demo-txt {
+  font-size: 200%;
+}
+
+li li {
+  font-size: 80%;
+}

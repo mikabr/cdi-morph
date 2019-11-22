@@ -2,6 +2,7 @@
 .Rhistory
 .Rproj.user/
 *_cache/
+*_files/
 deprecated/
 *.RData
 _*.feather
