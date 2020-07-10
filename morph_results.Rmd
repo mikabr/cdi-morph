@@ -104,6 +104,7 @@ morph_measures <- read_feather("data/morph_measures_inflecting.feather") %>%
 Sample sizes:
 ```{r sample_sizes}
 sample_sizes <- morph_measures %>%
+  distinct(language, data_id, stem) %>%
   group_by(language, stem) %>%
   count(name = "num_kids") %>%
   group_by(language, num_kids) %>%
@@ -446,3 +447,33 @@ ggplot(vocab_compare, aes(x = estimate, y = term_print, colour = formula_print))
   geom_point() +
   .scale_colour_discrete()
 ```
+
+```{r}
+morph_measures_inflecting <- read_feather("data/morph_measures_inflecting.feather")
+morph_measures_overregularizing <- read_feather("data/morph_measures_overregularizing.feather")
+
+morph_by_kid <- morph_measures_overregularizing %>%
+  group_by(language, measure, data_id, age, verbs_prop) %>%
+  summarise(num_true = sum(value), total = n(), prop = num_true / total) %>%
+  filter(str_detect(language, "Aus", negate = TRUE))
+
+morph_by_kid %>%
+  select(-num_true) %>%
+  spread(measure, prop) %>%
+ggplot(aes(x = stem_correct, y = stem_overreg)) +
+  facet_grid(. ~ language) +
+  geom_density_2d()
+  # geom_jitter() +
+  # geom_smooth()
+
+morph_measures_overregularizing %>%
+  filter(str_detect(language, "Aus", negate = TRUE)) %>%
+  group_by(language, measure, stem) %>%
+  summarise(prop = mean(value)) %>%
+  spread(measure, prop) %>%
+  ggplot(aes(x = stem_correct, y = stem_overreg)) +
+  facet_grid(. ~ language) +
+  geom_text(aes(label = stem)) +
+  geom_smooth(method = "lm", se = FALSE)
+```
+

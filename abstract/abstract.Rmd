@@ -1,0 +1,430 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r io_morph_results, include=FALSE}
+knitr::purl("../morph_results.Rmd")
+source("../morph_results.R", chdir = TRUE)
+```
+
+```{r io_setup, include=FALSE}
+theme_update(plot.margin = margin(0, 0, 0, 0, "pt"),
+             legend.margin = margin(0, 0, 0, 0, "pt"))
+measure_palette <- .pal(3) %>% set_names(levels(morph_measures$measure_print))
+
+label_caps <- as_labeller(function(value) {
+  paste0(toupper(substr(value, 1, 1)), substr(value, 2, nchar(value))) %>%
+    str_replace_all("_", " ")
+})
+```
+
+```{r}
+model_comparison %>%
+  filter(str_detect(language, "Aus", negate = TRUE),
+         str_detect(formula, "\\*", negate = TRUE),
+         str_extract_all(formula, "\\+") %>% map_int(length) == 1) %>%
+  group_by(measure, formula) %>%
+  summarise(mean_mean_mse = mean(mean_mse))
+
+model_comparison %>%
+  filter(str_detect(language, "Aus", negate = TRUE),
+         str_detect(formula, "\\*", negate = TRUE),
+         str_extract_all(formula, "\\+") %>% map_int(length) == 1,
+         measure != "stem_only") %>%
+  select(language, measure, formula, rsq) %>%
+  mutate(rsq = signif(100*rsq, 2)) %>%
+  group_by(measure, formula) %>%
+  summarise(mean_rsq = mean(rsq))
+  arrange(measure, formula, language)
+```
+
+```{r demo_plots}
+all_coefs <- read_feather("../data/fits/intercepts/inflecting/all_coefs.feather")
+
+all_coefs %>%
+  filter(term == "age", str_length(formula) == max(str_length(formula)),
+         measure != "stem_only", str_detect(language, "Aus", negate = TRUE)) %>%
+  select(language, measure, estimate, p.value, signif) %>%
+  arrange(measure, language)
+
+plot_coefs <- all_coefs %>%
+  mutate(language_print = format_languages(language),
+         measure_print = format_measures(measure),
+         term_print = format_terms(term) %>% fct_rev(),
+         ci_upper = estimate + 1.96 * std.error,
+         ci_lower = estimate - 1.96 * std.error) %>%
+  filter(term != "(Intercept)", str_detect(language, "Aus", negate = TRUE)) %>%
+  mutate(language_print = language_print %>% str_remove(" \\(.*\\)"))
+
+main_coefs <- plot_coefs %>%
+  filter(formula == "age + verbs_prop + verbs_prop^2 + (1 | stem)")
+int_coefs <- plot_coefs %>%
+  filter(formula == "age * verbs_prop + age * verbs_prop^2 + (1 | stem)",
+         str_detect(term, "&"))
+group_coefs <- bind_rows(main_coefs, int_coefs) %>%
+  mutate(group = if_else(str_detect(term, "age"), "age", "verbs"))
+
+plot_group_coefs <- function(grp, top) {
+  group_plot <- ggplot(group_coefs %>% filter(group == grp),
+         aes(x = estimate, y = term_print, xmin = ci_lower, xmax = ci_upper,
+             colour = measure_print)) +
+    facet_grid(language_print ~ measure_print) +
+    geom_vline(xintercept = 0, linetype = .refline, colour = .grey) +
+    geom_pointrangeh() +
+    .scale_colour_discrete(guide = FALSE) +
+    labs(x = "Coefficient estimate (log odds ratio)", y = "") +
+    theme(panel.grid.major.y = .coef_line,
+          strip.text.y = element_text(size = rel(0.8)))
+  if (top) {
+    group_plot +
+      theme(axis.title.x = element_blank(),
+            axis.title.y = element_blank(),
+            axis.text.y = element_text(margin = margin(l = 35, r = 3.5)))
+            # plot.margin = margin(l = 20))
+  } else {
+    group_plot +
+      theme(strip.text.x = element_blank())
+  }
+}
+
+cowplot::plot_grid(
+  plot_group_coefs("verbs", TRUE), plot_group_coefs("age", FALSE),
+  ncol = 1, rel_heights = c(2.5, 3)
+)
+ggsave("coefs.png", width = 9, height = 5.5)
+
+
+# ggsave("abstract/verb_coefs.png", width = 6.2, height = 3)
+# 
+# ggplot(group_coefs %>% filter(group == "age"),
+#        aes(x = estimate, y = term_print, xmin = ci_lower, xmax = ci_upper,
+#            colour = measure_print)) +
+#   facet_grid(language_print ~ measure_print) + #, scales = "free") +
+#   geom_vline(xintercept = 0, linetype = .refline, colour = .grey) +
+#   geom_pointrangeh() +
+#   .scale_colour_discrete(guide = FALSE) +
+#   labs(x = "Coefficient estimate (log odds ratio)", y = "") +
+#   theme(panel.grid.major.y = .coef_line)
+# ggsave("abstract/age_coefs.png", width = 6.2, height = 3)
+```
+
+```{r}
+all_coefs %>%
+  filter(str_detect(measure, "over"), str_detect(term, "age &"),
+         formula == "age * verbs_prop + age * verbs_prop^2 + (1 | stem)",
+         str_detect(language, "Aus", negate = TRUE)) %>%
+  select(language, term, estimate)
+
+all_coefs %>%
+  filter(str_detect(measure, "over"), str_detect(term, "age"),
+         formula == "age + verbs_prop + verbs_prop^2 + (1 | stem)",
+         str_detect(language, "Aus", negate = TRUE)) %>%
+  select(language, term, estimate)
+```
+
+```{r}
+sample_sizes <- morph_measures %>%
+  filter(str_detect(language, "Aus", negate = TRUE)) %>%
+  distinct(language, data_id, age, verbs_prop, stem) %>%
+  group_by(language) %>%
+  summarise(num_kids = n_distinct(data_id),
+            num_stems = n_distinct(stem)) %>%
+  arrange(num_stems)
+
+demo_predictions_age <- read_feather("../data/demo/demo_predictions_age.feather") %>%
+  filter(str_detect(language, "Aus", negate = TRUE), dataset == "inflecting",
+         measure != "stem") %>%
+  left_join(sample_sizes) %>%
+  mutate(age_print = as.character(age), #paste(age, "mos"),
+         measure_print = format_measures(measure),
+         language_print = format_languages(language) %>% str_remove(" \\(.*\\)"),
+         language_print = glue("{language_print} (N = {num_kids})"))
+
+# ggplot(demo_predictions_age, aes(x = verbs, y = .response, colour = age_print)) +
+#   facet_grid(measure_print ~ language_print, scales = "free_y", switch = "y") +
+#   geom_line() +
+#   geom_dl(aes(label = age_print),
+#           method = list("last.qp", dl.trans(x = x + 0.1), fontfamily = .font, cex = 0.7)) +
+#   expand_limits(x = 115) +
+#   scale_x_continuous(breaks = c(10, 40, 70, 100)) +
+#   # scale_colour_viridis_d(guide = FALSE) +
+#   scale_colour_manual(guide = FALSE, values = solarized_palette(9)[c(5,7,9)]) +
+#   labs(x = "Verb vocabulary size",
+#        y = "Probability of producing") +
+#   theme(strip.placement = "outside",
+#         plot.margin = margin(0))
+#         # panel.border = border_custom())
+# 
+# ggsave("fits.png", width = 8, height = 6)
+
+age_labels <- demo_predictions_age %>%
+  filter(age %in% c(24, 30)) %>%
+  group_by(language, measure) %>%
+  filter(if_else(measure == "stem_only", verbs == min(verbs), verbs == max(verbs)))
+ggplot(demo_predictions_age %>% filter(age %in% c(24, 30)),
+       aes(x = verbs, y = .response, colour = measure_print, alpha = age_print)) +
+  facet_grid(. ~ language_print) +
+  geom_line() +
+  geom_text_repel(aes(label = age_print), data = age_labels %>% filter(measure == "stem_only"),
+                  direction = "y", min.segment.length = 0.1, force = 0.5,
+                  nudge_x = -15,
+                  segment.color = .grey, segment.alpha = 1, point.padding = 0.2,
+                  family = .font, show.legend = FALSE) +
+  geom_text_repel(aes(label = age_print), data = age_labels %>% filter(measure != "stem_only"),
+                  direction = "y", min.segment.length = 0.1, force = 0.5,
+                  nudge_x = 10,
+                  segment.color = .grey, segment.alpha = 1, point.padding = 0.2,
+                  family = .font, show.legend = FALSE) +
+  expand_limits(x = c(-10, 115)) +
+  scale_x_continuous(breaks = c(10, 40, 70, 100)) +
+  .scale_colour_discrete(name = "") +
+  scale_alpha_manual(guide = FALSE, values = c(0.6, 1)) +
+  labs(x = "Verb vocabulary size",
+       y = "Probability of producing") +
+  theme(legend.position = "top",
+        legend.box.margin = margin(t = 5, b = -10))
+ggsave("fits.png", width = 9, height = 3.75)
+```
+
+```{r plot_slopes_term}
+slopes_ranefs <- read_feather("../data/slopes_ranefs.feather")
+
+slopes_ranefs_measure <- slopes_ranefs %>%
+  select(language, measure, stem, term, estimate) %>%
+  spread(measure, estimate) %>%
+  mutate(language_print = format_languages(language),
+         language_print = language_print %>% str_remove(" \\(.*\\)"),
+         term_print = format_terms(term))
+
+format_cor <- function(val) {
+  sprintf("%.2f", val) %>% str_replace("-", "–") %>% str_replace("0\\.", ".")
+}
+
+slopes_ranefs_measure_cors <- slopes_ranefs_measure %>%
+  group_by(language_print, term, term_print) %>%
+  summarise(cor_sc_so = cor(stem_correct, stem_overreg),
+            p_sc_so = cor.test(stem_correct, stem_overreg)$p.value) %>%
+  ungroup() %>%
+  mutate(cor = paste("r =", format_cor(cor_sc_so)))
+
+plot_slopes_term <- function(terms, top, r_pos = "left") {
+  slopes_measures_term <- slopes_ranefs_measure %>% filter(term %in% terms)
+  if (r_pos == "left") {
+    x_pos <- min(slopes_measures_term$stem_correct)
+    x_just <- 0
+  }
+  if (r_pos == "right") {
+    x_pos <- max(slopes_measures_term$stem_correct)
+    x_just <- 1
+  }
+  
+  terms_label <- terms %>%
+    fct_recode("Age effect" = "age", "Verbs effect" = "verbs_prop")
+  
+  cor_plt <- ggplot(slopes_measures_term, aes(x = stem_correct, y = stem_overreg)) +
+    facet_grid(term_print ~ language_print, labeller = label_caps) +
+    geom_hline(yintercept = 0, linetype = .refline, colour = .grey) +
+    geom_vline(xintercept = 0, linetype = .refline, colour = .grey) +
+    geom_smooth(method = "lm", se = FALSE, colour = .pal(1)) +
+    geom_text(aes(label = stem), family = .font, vjust = "inward", hjust = "inward") +
+    geom_text(aes(label = cor), family = .font, colour = "gray50",
+              x = x_pos, hjust = x_just, y = max(slopes_measures_term$stem_overreg),
+              data = slopes_ranefs_measure_cors %>% filter(term %in% terms)) +
+    labs(x = "Effect for stem + correct",
+         y = "Effect for\n stem + overregularized")
+  if (top) {
+    cor_plt <- cor_plt + theme(axis.title.x = element_blank(),
+                               axis.title.y = element_text(margin = margin(l = 13, r = 3.5)))
+  } else {
+    cor_plt <- cor_plt + theme(strip.text.x = element_blank())
+  }
+  cor_plt
+  
+}
+
+# plot_slopes_term("(Intercept)", top = TRUE)
+
+cowplot::plot_grid(
+  plot_slopes_term("verbs_prop", top = TRUE),
+  plot_slopes_term("age", top = FALSE, "right"),
+  ncol = 1
+)
+
+ggsave("stem_cors.png", width = 9, height = 5.5)
+
+slopes_measures_verbs <- slopes_ranefs_measure %>% filter(term == "verbs_prop")
+ggplot(slopes_measures_verbs, aes(x = stem_correct, y = stem_overreg)) +
+    facet_grid(. ~ language_print, labeller = label_caps) +
+    geom_hline(yintercept = 0, linetype = .refline, colour = .grey) +
+    geom_vline(xintercept = 0, linetype = .refline, colour = .grey) +
+    geom_smooth(method = "lm", se = FALSE, colour = .pal(1)) +
+    geom_text(aes(label = stem), family = .font, vjust = "inward", hjust = "inward") +
+    geom_text(aes(label = cor), family = .font, colour = "gray50",
+              x = min(slopes_measures_verbs$stem_correct), hjust = 0,
+              y = max(slopes_measures_verbs$stem_overreg),
+              data = slopes_ranefs_measure_cors %>% filter(term == "verbs_prop")) +
+    labs(x = "Verbs effect for stem + correct",
+         y = "Verbs effect for\n stem + overregularized")
+ggsave("stem_cors_verbs.png", width = 9, height = 3.5)
+```
+
+```{r}
+stems_ranefs <- read_feather("data/fits/stems_overall/all_ranefs.feather")
+stem_effects <- best_ranefs %>%
+  bind_rows(stems_ranefs) %>%
+  filter(dataset == "inflecting", term == "(Intercept)",
+         str_detect(language, "Aus", negate = TRUE)) %>%
+  mutate(exp_estimate = exp(estimate)) %>%
+  select(language, measure, stem_label = stem, exp_estimate) %>%
+  spread(measure, exp_estimate) %>%
+  mutate(correct_given_stem = stem_correct - stem,
+         overreg_given_stem = stem_overreg - stem)
+
+ggplot(stem_effects, aes(x = correct_given_stem, y = overreg_given_stem)) +
+  facet_wrap(~language, nrow = 1) +
+  geom_text(aes(label = stem_label)) +
+  geom_smooth(method = "lm", se = FALSE)
+
+# demo_predictions_age_stem <- read_feather("../data/demo/demo_predictions_age_stem.feather") %>%
+#   filter(str_detect(language, "Aus", negate = TRUE), dataset == "inflecting")
+  # left_join(sample_sizes) %>%
+  # mutate(age_print = as.character(age), #paste(age, "mos"),
+  #        measure_print = format_measures(measure),
+  #        language_print = format_languages(language) %>% str_remove(" \\(.*\\)"))
+         # language_print = glue("{language_print} (N = {num_kids})"))
+
+demo_predictions_age_stem %>%
+  filter(str_detect(language, "Aus", negate = TRUE), dataset == "inflecting",
+         measure != "stem_only",
+         age == 24,
+         language == "English (American)") %>%
+  ggplot(aes(x = verbs, y = .response, colour = measure)) +
+  facet_wrap(~stem) +
+  geom_line()
+
+demo_predictions_age_stem %>%
+  filter(str_detect(language, "Aus", negate = TRUE), dataset == "inflecting",
+         measure != "stem_only",
+         age == 30, verbs == 70,
+         # language == "English (American)"
+         ) %>%
+  select(language, measure, age, verbs, stem_label = stem, .response) %>%
+  spread(measure, .response) %>%
+  ggplot(aes(x = stem_correct, y = stem_overreg)) +
+  facet_wrap(~language, nrow = 1) +
+  # geom_point()
+  geom_text(aes(label = stem_label)) +
+  geom_smooth(method = "lm", se = FALSE)
+
+
+demo_predictions_age_stem %>%
+  filter(str_detect(language, "Aus", negate = TRUE), dataset == "inflecting",
+         measure != "stem_only",
+         age == 24,
+         language == "English (American)",
+         stem %in% c("eat", "have")) %>%
+  ggplot(aes(x = verbs, y = .response)) +
+  facet_wrap(~measure) +
+  geom_line(aes(colour = stem))
+
+demo_predictions_age_stem %>%
+  filter(str_detect(language, "Aus", negate = TRUE), dataset == "inflecting",
+         measure != "stem_only",
+         age == 24,
+         language == "English (American)") %>%
+  filter(.response == min(.response))
+
+# stem_predictions <- read_feather("../data/demo/stem_predictions.feather")
+# 
+# stem_prediction_compare <- stem_predictions %>%
+#   select(-.fitted) %>%
+#   mutate(stem_label = stem) %>%
+#   spread(measure, .response)
+# 
+# ggplot(stem_prediction_compare, aes(x = stem, y = stem_correct)) +
+#   facet_grid(. ~ language) +
+#   geom_text(aes(label = stem_label)) +
+#   geom_smooth(method = "lm", se = FALSE)
+# 
+# ggplot(stem_prediction_compare, aes(x = stem, y = stem_overreg)) +
+#   facet_grid(. ~ language) +
+#   geom_text(aes(label = stem_label)) +
+#   geom_smooth(method = "lm", se = FALSE)
+# 
+# ggplot(stem_prediction_compare, aes(x = stem_correct, y = stem_overreg)) +
+#   facet_grid(. ~ language) +
+#   geom_text(aes(label = stem_label)) +
+#   geom_smooth(method = "lm", se = FALSE)
+
+
+stem_areas <- demo_predictions_age_stem %>%
+  select(-.fitted, -dataset, -verbs_prop, -value) %>%
+  rename(stem_label = stem) %>%
+  spread(measure, .response) %>%
+  group_by(language, age, stem_label) %>%
+  summarise(area_correct = mean(stem - stem_correct),
+            area_overreg = mean(stem - stem_overreg))
+ggplot(stem_areas, aes(x = area_correct, y = area_overreg)) +
+  facet_wrap(age ~ language) +
+  geom_text(aes(label = stem_label)) +
+  geom_smooth(method = "lm", se = FALSE)
+
+demo_predictions_conds <- demo_predictions_age_stem %>%
+  select(-.fitted, -dataset, -verbs_prop, -value) %>%
+  rename(stem_label = stem) %>%
+  spread(measure, .response) %>%
+  mutate(correct_given_stem = stem - stem_correct,
+         overreg_given_stem = stem - stem_overreg)
+
+demo_predictions_conds %>%
+  filter(age == 24, language == "English (American)") %>%
+  ggplot(aes(x = verbs, y = correct_given_stem)) +
+    facet_wrap(~stem_label) +
+    geom_line()
+
+demo_predictions_conds %>%
+  gather(vars, prob, -language, -age, -verbs, -stem_label) %>%
+  filter(age == 24, language == "English (American)",
+         vars == "stem" | str_detect(vars, "correct")) %>%
+  ggplot(aes(x = verbs, y = prob, colour = vars)) +
+    facet_wrap(~stem_label) +
+    geom_line()
+
+demo_predictions_conds %>%
+  group_by(language, age, verbs) %>%
+  summarise(cor_conds = cor(correct_given_stem, overreg_given_stem),
+            n = n()) %>%
+  ggplot(aes(x = verbs, y = cor_conds, colour = factor(age))) +
+  facet_wrap(~language, nrow = 1, scales = "free") +
+  geom_hline(yintercept = 0, linetype = .refline, colour = .grey) +
+  geom_line() +
+  .scale_colour_discrete()
+
+demo_predictions_conds %>%
+  filter(age == 30, verbs == 50) %>%
+  group_by(language) %>%
+  summarise(cor = cor(correct_given_stem, overreg_given_stem),
+            p_cor = cor.test(correct_given_stem, overreg_given_stem)$p.value,
+            n = n())
+
+demo_predictions_conds %>%
+  filter(age == 30, verbs == 50) %>%
+  group_by(language) %>%
+  summarise(cor = cor(correct_given_stem, overreg_given_stem),
+            p_cor = cor.test(correct_given_stem, overreg_given_stem)$p.value,
+            n = n())
+
+ggplot(demo_predictions_conds %>% filter(age == 30, verbs == 50),
+       aes(x = correct_given_stem, y = overreg_given_stem)) +
+  facet_wrap(~language, scales = "free") +
+  geom_text(aes(label = stem_label)) +
+  geom_smooth(method = "lm", se = FALSE)
+
+ggplot(demo_predictions_conds %>% filter(age == 30, verbs == 50),
+       aes(x = stem_correct, y = stem_overreg)) +
+  facet_wrap(~language, scales = "free") +
+  geom_text(aes(label = stem_label)) +
+  geom_smooth(method = "lm", se = FALSE)
+```
