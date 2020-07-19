@@ -1,0 +1,86 @@
+:root {
+  --main-bg-color: #44AA99;
+}
+
+.title_container {
+  background-color: var(--main-bg-color) !important;
+  height: calc(24.5in * 0.18) !important;
+  padding-top: 0.2em;
+}
+
+.logo_left {
+  background-color: var(--main-bg-color) !important;
+}
+
+.logo_right {
+  background-color: var(--main-bg-color) !important;
+}
+
+.poster_body {
+  column-rule-style: solid !important;
+  column-rule-color: #b3b3b3 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+.poster_body h1 {
+  background-color: var(--main-bg-color) !important;
+  border-color: var(--main-bg-color) !important;
+  padding-top: 2pt;
+  padding-bottom: 4pt;
+  font-size: 60pt !important;
+}
+
+img {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+.poster_body h2 {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+.logo {
+  height: 1.5in;
+  float: right;
+}
+
+.poster_body p {
+  margin-top: 4mm !important;
+  margin-bottom: 2mm !important;
+}
+
+.poster_body ol {
+  margin-top: 6mm !important;
+  margin-bottom: 3mm !important;
+}
+
+.poster_body ul {
+  margin-top: 6mm !important;
+  margin-bottom: 2mm !important;
+  margin-right: 6mm;
+  margin-left: 6mm;
+}
+
+.poster_body ul ul{
+  margin-top: 0mm !important;
+  margin-bottom: 0mm !important;
+}
+
+.clearfix {
+  clear: right;
+}
+
+.formula {
+  font-size: 63%;
+  font-family: Source Code Pro;
+}
+
+#affiliation {
+  margin-top: -0.5em;
+}
+
+.centered {
+  text-align: center;
+}
