@@ -1,4 +1,4 @@
-## ----setup, include=FALSE, cache=FALSE--------------------------------------------------------------------------------------------------------------------------
+## ----setup, include=FALSE, cache=FALSE----------------------------------------
 library(knitr)
 library(feather)
 library(tidyverse)
@@ -24,7 +24,7 @@ theme_set(langcog::theme_mikabr(base_family = .font))
 opts_chunk$set(message = FALSE, warning = FALSE, cache = TRUE, echo = FALSE)
 
 
-## ----load_morph_measures----------------------------------------------------------------------------------------------------------------------------------------
+## ----load_morph_measures------------------------------------------------------
 format_languages <- function(languages) {
   languages %>% fct_reorder(str_length(.))
 }
@@ -71,7 +71,7 @@ morph_measures <- read_feather("data/morph_measures_inflecting.feather") %>%
   left_join(kid_info)
 
 
-## ----sample_sizes-----------------------------------------------------------------------------------------------------------------------------------------------
+## ----sample_sizes-------------------------------------------------------------
 sample_sizes <- morph_measures %>%
   distinct(language, data_id, stem) %>%
   group_by(language, stem) %>%
@@ -83,7 +83,7 @@ sample_sizes <- morph_measures %>%
 sample_sizes %>% kable()
 
 
-## ----plot_morph_measures, fig.width=8, fig.height=6-------------------------------------------------------------------------------------------------------------
+## ----plot_morph_measures, fig.width=8, fig.height=6---------------------------
 ggplot(morph_measures, aes(x = verbs_prop, y = ..count.., fill = value)) +
   facet_grid(measure_print ~ language_print) +
   coord_fixed() +
@@ -94,7 +94,7 @@ ggplot(morph_measures, aes(x = verbs_prop, y = ..count.., fill = value)) +
   labs(x = "Verb vocabulary (proportion of items)", y = "Conditional density of production")
 
 
-## ----plot_models_mse, fig.width=7, fig.height=7-----------------------------------------------------------------------------------------------------------------
+## ----plot_models_mse, fig.width=7, fig.height=7-------------------------------
 model_comparison <- read_feather("data/model_comparison.feather") %>%
   mutate(language_print = format_languages(language),
          measure_print = format_measures(measure),
@@ -142,7 +142,7 @@ ggplot(model_comparison, aes(x = 1 - mean_mse, y = fct_rev(formula_print),
 #         panel.grid.major.y = .coef_line)
 
 
-## ----demo_age_plots---------------------------------------------------------------------------------------------------------------------------------------------
+## ----demo_age_plots-----------------------------------------------------------
 best_coefs <- read_feather("data/best_models/best_coefs.feather")
 plot_coefs <- best_coefs %>%
   mutate(significant = if_else(p.value < 0.05, "*", ""),
@@ -193,7 +193,7 @@ demo_width <- 9.5
 demo_height <- 5
 
 
-## ---- dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height----------------------------------------------------------------------------------
+## ---- dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height----
 # plot_demo_age("stem_only", "main")
 
 plot_demo_fits("stem_only", "main")
@@ -203,27 +203,27 @@ plot_demo_coefs("stem_only")
 
 
 
-## ---- dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height----------------------------------------------------------------------------------
+## ---- dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height----
 # plot_demo_age("stem_only")
 
 
-## ---- dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height----------------------------------------------------------------------------------
+## ---- dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height----
 # plot_demo_age("stem_correct", "main")
 
 
-## ---- dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height----------------------------------------------------------------------------------
+## ---- dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height----
 # plot_demo_age("stem_correct")
 
 
-## ---- dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height----------------------------------------------------------------------------------
+## ---- dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height----
 # plot_demo_age("stem_overreg", "main")
 
 
-## ---- dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height----------------------------------------------------------------------------------
+## ---- dependson="demo_age_plots", fig.width=demo_width, fig.height=demo_height----
 # plot_demo_age("stem_overreg")
 
 
-## ---- eval=FALSE------------------------------------------------------------------------------------------------------------------------------------------------
+## ---- eval=FALSE--------------------------------------------------------------
 ## slopes_ranefs <- read_feather("data/slopes_ranefs.feather")
 ## 
 ## slopes_ranefs_plot <- slopes_ranefs %>%
@@ -272,7 +272,7 @@ plot_demo_coefs("stem_only")
 ##   scale_y_discrete(breaks = ranefs_eng$order, labels = ranefs_eng$stem)
 
 
-## ---- eval=FALSE------------------------------------------------------------------------------------------------------------------------------------------------
+## ---- eval=FALSE--------------------------------------------------------------
 ## morph_by_stem <- morph_measures %>%
 ##   group_by(language, measure, age, stem) %>%
 ##   summarise(prop = mean(value), total = n()) %>%
@@ -344,7 +344,7 @@ plot_demo_coefs("stem_only")
 ## 
 
 
-## ---- eval=FALSE------------------------------------------------------------------------------------------------------------------------------------------------
+## ---- eval=FALSE--------------------------------------------------------------
 ## vocab_compare <- all_coefs %>%
 ##   filter(#str_detect(term, "verbs"),
 ##     term == "age",
@@ -363,7 +363,7 @@ plot_demo_coefs("stem_only")
 ##   .scale_colour_discrete()
 
 
-## ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+## -----------------------------------------------------------------------------
 morph_measures_inflecting <- read_feather("data/morph_measures_inflecting.feather")
 morph_measures_overregularizing <- read_feather("data/morph_measures_overregularizing.feather")
 

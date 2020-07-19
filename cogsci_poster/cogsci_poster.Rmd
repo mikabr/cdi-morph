@@ -23,11 +23,8 @@ link_col: "#4477AA"
 
 output: 
   posterdown::posterdown_html:
-    self_contained: false
+    self_contained: true
     css: styles.css
-bibliography: packages.bib
-editor_options: 
-  chunk_output_type: console
 ---
 
 
